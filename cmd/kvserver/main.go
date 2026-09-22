@@ -22,6 +22,7 @@ func main() {
 	peersFlag := flag.String("peers", "", "comma-separated id=host:port list, e.g. 1=localhost:9001,2=localhost:9002,3=localhost:9003")
 	dataDir := flag.String("data", "", "directory for persistent Raft/KV state")
 	maxRaftState := flag.Int("max-raft-state", -1, "snapshot once persisted Raft state exceeds this many bytes (-1 disables)")
+	verbose := flag.Bool("verbose", true, "log leader/term changes and commit latency")
 	flag.Parse()
 
 	if *id < 0 || *peersFlag == "" || *dataDir == "" {
@@ -67,6 +68,7 @@ func main() {
 	log.Printf("kvserver id=%d listening on %s, peers=%v", *id, self, peers)
 
 	kv := kvstore.StartServer(ends, idIndex[*id], persister, *maxRaftState)
+	kv.Raft().Verbose = *verbose
 	tcpSrv.RegisterName("KVServer", kv)
 	tcpSrv.RegisterName("Raft", kv.Raft())
 

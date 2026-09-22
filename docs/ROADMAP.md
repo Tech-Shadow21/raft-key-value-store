@@ -35,9 +35,15 @@ correctness is checked incrementally, not just at the end).
       write made before the kill was lost, confirmed the killed node
       rejoined as a correct-term follower (not a stale leader) and served
       reads consistent with the rest of the cluster after restart.
-- [ ] **Phase 8 — polish.** Metrics/logging for leader changes and commit
-      latency, README diagrams, CONTRIBUTING notes.
+- [x] **Phase 8 — polish.** Leader-change and commit-latency logging
+      (`raft.Raft.Verbose`, on by default in `cmd/kvserver`), a Mermaid
+      architecture diagram in the README, and [CONTRIBUTING.md](../CONTRIBUTING.md).
 
-Current phase: **8** (polish) — Raft core, KV service, in-memory
-fault-injection harness, chaos test, and real TCP cluster are all
-implemented and verified (`go test ./...` and a manual 3-node kill test).
+All phases complete. Every property in the original ask is implemented and
+verified by tests, not just asserted: leader election, WAL replication,
+crash survival, consistent reads/writes, and a fault-injection harness that
+proves it (`go test ./...`, clean under `-race`, plus a chaos test and a
+manual `kill -9` against a real 3-node TCP cluster).
+
+Deliberately out of scope (see docs/DESIGN.md §6): cluster membership
+changes, Byzantine fault tolerance, multi-raft/sharding.

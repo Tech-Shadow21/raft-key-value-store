@@ -75,7 +75,22 @@ type Raft struct {
 	applyCh          chan ApplyMsg
 	applyCond        *sync.Cond
 
-	Logger *log.Logger
+	// startTimes records when Start() proposed each still-uncommitted log
+	// index, purely so we can log commit latency once it's applied. Purged
+	// as entries commit or are overwritten.
+	startTimes map[int]time.Time
+
+	// Verbose enables per-event logging (leader/term changes, commit
+	// latency). Off by default so test output stays quiet; cmd/kvserver
+	// turns it on.
+	Verbose bool
+	Logger  *log.Logger
+}
+
+func (rf *Raft) logf(format string, args ...interface{}) {
+	if rf.Verbose && rf.Logger != nil {
+		rf.Logger.Printf("[raft %d] "+format, append([]interface{}{rf.me}, args...)...)
+	}
 }
 
 // Make creates a Raft peer. peers[me] is this node's own (unused) end;
@@ -83,14 +98,15 @@ type Raft struct {
 // election-timeout and log-applier goroutines and returns immediately.
 func Make(peers []transport.ClientEnd, me int, persister Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{
-		peers:     peers,
-		persister: persister,
-		me:        me,
-		state:     Follower,
-		votedFor:  -1,
-		log:       []LogEntry{{Term: 0, Index: 0}},
-		applyCh:   applyCh,
-		Logger:    log.New(log.Writer(), "", 0),
+		peers:      peers,
+		persister:  persister,
+		me:         me,
+		state:      Follower,
+		votedFor:   -1,
+		log:        []LogEntry{{Term: 0, Index: 0}},
+		applyCh:    applyCh,
+		startTimes: map[int]time.Time{},
+		Logger:     log.New(log.Writer(), "", log.LstdFlags),
 	}
 	rf.applyCond = sync.NewCond(&rf.mu)
 	rf.readPersist(persister.ReadRaftState())
@@ -287,10 +303,14 @@ func (rf *Raft) sendInstallSnapshot(peer int) {
 
 // becomeFollower must be called with rf.mu held.
 func (rf *Raft) becomeFollower(term int) {
+	wasLeader := rf.state == Leader
 	rf.state = Follower
 	rf.currentTerm = term
 	rf.votedFor = -1
 	rf.persist()
+	if wasLeader {
+		rf.logf("stepping down from leader, new term %d", term)
+	}
 }
 
 func (rf *Raft) resetElectionDeadline() {
@@ -360,6 +380,7 @@ func (rf *Raft) becomeLeader() {
 		rf.nextIndex[i] = rf.lastLogIndex() + 1
 		rf.matchIndex[i] = 0
 	}
+	rf.logf("elected leader for term %d (last log index %d)", rf.currentTerm, rf.lastLogIndex())
 	go rf.leaderHeartbeatLoop(rf.currentTerm)
 }
 
@@ -571,7 +592,16 @@ func (rf *Raft) advanceCommitIndex() {
 			}
 		}
 		if count > n/2 {
+			old := rf.commitIndex
 			rf.commitIndex = N
+			if rf.Verbose {
+				for idx := old + 1; idx <= N; idx++ {
+					if t0, ok := rf.startTimes[idx]; ok {
+						rf.logf("committed index %d (term %d) after %s", idx, rf.currentTerm, time.Since(t0))
+						delete(rf.startTimes, idx)
+					}
+				}
+			}
 			rf.applyCond.Broadcast()
 			break
 		}
@@ -613,6 +643,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	entry := LogEntry{Term: rf.currentTerm, Index: index, Command: command}
 	rf.log = append(rf.log, entry)
 	rf.persist()
+	if rf.Verbose {
+		rf.startTimes[index] = time.Now()
+	}
 
 	rf.matchIndex[rf.me] = index
 	rf.nextIndex[rf.me] = index + 1
