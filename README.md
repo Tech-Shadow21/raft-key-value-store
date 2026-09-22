@@ -1,0 +1,57 @@
+# raft-kv-store
+
+A distributed key-value store built on the Raft consensus algorithm, written in Go.
+Several nodes elect a leader, replicate a write-ahead log, survive node crashes,
+and serve linearizable reads and writes. Includes a fault-injection test harness
+(node crashes, network partitions, message delay/drop) modeled on the MIT 6.5840
+(6.824) lab test suites, so correctness is demonstrated by passing tests rather
+than asserted by hand.
+
+## Why
+
+Consensus is a classic distributed-systems interview topic and the mechanism
+that keeps services like Azure's control planes (and etcd/Consul/CockroachDB
+generally) consistent across node failures. This project implements it from
+first principles: leader election, log replication, persistence, and a
+replicated state machine (the KV store) on top.
+
+## Documents
+
+- [docs/DESIGN.md](docs/DESIGN.md) — architecture, Raft state machine, RPCs, KV layer, consistency model
+- [docs/ROADMAP.md](docs/ROADMAP.md) — build phases, mapped to MIT 6.5840 labs (2A/2B/2C/2D/3A/3B)
+- [docs/TESTING.md](docs/TESTING.md) — fault-injection harness design and how to run it
+
+## Layout
+
+```
+raft/          Raft consensus core (election, log replication, persistence)
+kvstore/       Replicated key-value service built on top of raft.Raft
+transport/     RPC transport: in-memory (testable, fault-injectable) + real TCP
+cmd/kvserver/  Standalone server binary (real cluster deployment)
+cmd/kvctl/     CLI client for Get/Put/Append against a cluster
+test/          End-to-end fault-injection scenarios
+```
+
+## Status
+
+See [docs/ROADMAP.md](docs/ROADMAP.md) for current phase.
+
+## Running tests
+
+```bash
+go test ./raft/...      # unit + fault-injection tests for consensus
+go test ./kvstore/...   # KV linearizability + fault-injection tests
+go test ./...           # everything
+```
+
+## Running a real cluster
+
+```bash
+go build -o bin/kvserver ./cmd/kvserver
+./bin/kvserver -id 1 -peers "1=localhost:9001,2=localhost:9002,3=localhost:9003" -data data/1 &
+./bin/kvserver -id 2 -peers "1=localhost:9001,2=localhost:9002,3=localhost:9003" -data data/2 &
+./bin/kvserver -id 3 -peers "1=localhost:9001,2=localhost:9002,3=localhost:9003" -data data/3 &
+
+go run ./cmd/kvctl -peers "localhost:9001,localhost:9002,localhost:9003" put foo bar
+go run ./cmd/kvctl -peers "localhost:9001,localhost:9002,localhost:9003" get foo
+```
