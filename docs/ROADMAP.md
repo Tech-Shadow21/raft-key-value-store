@@ -39,11 +39,21 @@ correctness is checked incrementally, not just at the end).
       (`raft.Raft.Verbose`, on by default in `cmd/kvserver`), a Mermaid
       architecture diagram in the README, and [CONTRIBUTING.md](../CONTRIBUTING.md).
 
+- [x] **Phase 9 — web dashboard.** JSON API (`/api/status`, `/api/kv`) added
+      to `cmd/kvserver` behind an opt-in `-http` flag, plus a Next.js app
+      in `web/` that polls it: live leader/term table, a Get/Put/Append
+      form, and an event feed of leader changes and nodes going up/down.
+      Verified against a real 3-node cluster in-browser: correctly showed
+      the initial leader, then a `kill -9` on it produced "node N went
+      unreachable" / "node M became leader (term 2)" in the event feed
+      within the 1s poll interval, with the table updating to match.
+
 All phases complete. Every property in the original ask is implemented and
 verified by tests, not just asserted: leader election, WAL replication,
 crash survival, consistent reads/writes, and a fault-injection harness that
 proves it (`go test ./...`, clean under `-race`, plus a chaos test and a
-manual `kill -9` against a real 3-node TCP cluster).
+manual `kill -9` against a real 3-node TCP cluster, watched live in the
+web dashboard).
 
 Deliberately out of scope (see docs/DESIGN.md §6): cluster membership
 changes, Byzantine fault tolerance, multi-raft/sharding.

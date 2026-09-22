@@ -23,6 +23,7 @@ func main() {
 	dataDir := flag.String("data", "", "directory for persistent Raft/KV state")
 	maxRaftState := flag.Int("max-raft-state", -1, "snapshot once persisted Raft state exceeds this many bytes (-1 disables)")
 	verbose := flag.Bool("verbose", true, "log leader/term changes and commit latency")
+	httpAddr := flag.String("http", "", "address for the dashboard JSON API, e.g. localhost:8001 (empty disables it)")
 	flag.Parse()
 
 	if *id < 0 || *peersFlag == "" || *dataDir == "" {
@@ -73,6 +74,16 @@ func main() {
 	tcpSrv.RegisterName("Raft", kv.Raft())
 
 	go statusLoop(kv)
+
+	if *httpAddr != "" {
+		clerkEnds := make([]transport.ClientEnd, len(ids))
+		for i, pid := range ids {
+			clerkEnds[i] = transport.NewTCPEnd(peers[pid])
+		}
+		ck := kvstore.MakeClerk(clerkEnds)
+		startHTTPServer(*httpAddr, *id, peers, kv, ck)
+		log.Printf("dashboard API listening on %s", *httpAddr)
+	}
 
 	select {}
 }

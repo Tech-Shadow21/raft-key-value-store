@@ -71,9 +71,10 @@ leader crashes and partitions are exercised in tests.
 raft/          Raft consensus core (election, log replication, persistence)
 kvstore/       Replicated key-value service built on top of raft.Raft
 transport/     RPC transport: in-memory (testable, fault-injectable) + real TCP
-cmd/kvserver/  Standalone server binary (real cluster deployment)
+cmd/kvserver/  Standalone server binary (real cluster deployment) + dashboard JSON API
 cmd/kvctl/     CLI client for Get/Put/Append against a cluster
 test/          End-to-end fault-injection scenarios
+web/           Next.js live cluster dashboard (leader/term status, Get/Put/Append, failover events)
 ```
 
 ## Status
@@ -108,3 +109,28 @@ By default `kvserver` logs leader/term changes and per-entry commit latency
 [raft 2] committed index 1 (term 1) after 2.1ms
 [raft 2] stepping down from leader, new term 3
 ```
+
+## Web dashboard
+
+`web/` is a small Next.js app that polls every node's status and shows the
+cluster live: who's leader, current term, a Get/Put/Append form, and an
+event feed of leader changes / nodes going up or down — the fastest way to
+*watch* a failover instead of grepping logs for it.
+
+Each `kvserver` needs its dashboard API enabled with `-http`:
+
+```bash
+./bin/kvserver -id 1 -peers "1=localhost:9001,2=localhost:9002,3=localhost:9003" -data data/1 -http localhost:8001 &
+./bin/kvserver -id 2 -peers "1=localhost:9001,2=localhost:9002,3=localhost:9003" -data data/2 -http localhost:8002 &
+./bin/kvserver -id 3 -peers "1=localhost:9001,2=localhost:9002,3=localhost:9003" -data data/3 -http localhost:8003 &
+
+cd web
+cp .env.local.example .env.local   # edit if your -http addresses differ
+npm install
+npm run dev   # http://localhost:3000
+```
+
+The dashboard's `NEXT_PUBLIC_KV_NODES` env var maps node id to its `-http`
+address (`id=http://host:port`, comma-separated). It talks directly to
+each node's JSON API (`/api/status`, `/api/kv`) from the browser, so those
+ports need to be reachable from wherever you open the dashboard.
