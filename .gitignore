@@ -3,3 +3,4 @@
 /logs/
 *.pid
 .DS_Store
+.claude/
