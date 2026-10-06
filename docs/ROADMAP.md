@@ -47,6 +47,17 @@ correctness is checked incrementally, not just at the end).
       the initial leader, then a `kill -9` on it produced "node N went
       unreachable" / "node M became leader (term 2)" in the event feed
       within the 1s poll interval, with the table updating to match.
+- [x] **Phase 10 - plain language dashboard and demo controls.** Rebuilt
+      the dashboard for non technical viewers: a health banner, server cards
+      with roles described as coordinator and backup copy, a notebook style
+      form for Put, Append and Get, and a plain language event log. Raw Raft
+      details sit behind a toggle with a glossary. Added an opt in
+      `-demo-controls` flag and `POST /api/power` so servers can be switched
+      off and on from the dashboard; switching off kills the Raft instance
+      in process and refuses its RPCs, and switching on rebuilds it from
+      disk, matching the test harness's Crash1/Restart1. Verified in browser:
+      leader switch off, re election, reads after failover, loss of majority,
+      and recovery after both servers were switched back on.
 
 All phases complete. Every property in the original ask is implemented and
 verified by tests, not just asserted: leader election, WAL replication,

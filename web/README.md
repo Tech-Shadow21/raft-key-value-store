@@ -1,36 +1,32 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Dashboard
 
-## Getting Started
+A Next.js app that shows a Raft Key Value Store cluster live, in plain language.
+It polls each server's JSON API once a second and talks to the servers directly
+from the browser.
 
-First, run the development server:
+## Running
+
+Start the servers with `-http` (and optionally `-demo-controls`) as described in the
+main [README](../README.md), then:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+cp .env.local.example .env.local   # edit if your -http addresses differ
+npm install
+npm run dev                        # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+`NEXT_PUBLIC_KV_NODES` lists each server as `id=http://host:port`, comma separated.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Code layout
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+| Path | Purpose |
+| --- | --- |
+| `app/page.tsx` | Page layout, status polling, and the plain language event log |
+| `components/HealthBanner.tsx` | One sentence summary of cluster health |
+| `components/ServerCard.tsx` | One card per server, with optional power button and technical details |
+| `components/Notebook.tsx` | Save, add to, and look up notes (Put, Append, Get) |
+| `components/ActivityFeed.tsx` | Event log |
+| `components/Explainer.tsx` | How it works cards and the technical glossary |
+| `lib/api.ts` | Calls to the server JSON API, with timeouts |
+| `lib/cluster.ts` | Derives overall health from per server status |
+| `lib/nodes.ts` | Reads server addresses from the environment |
