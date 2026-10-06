@@ -2,30 +2,41 @@
 
 import { useEffect, useRef, useState } from "react";
 import { getNodes } from "@/lib/nodes";
-import { fetchStatus, kvGet, kvWrite, NodeStatus } from "@/lib/api";
+import { fetchStatus, NodeStatus, setPower } from "@/lib/api";
+import { describeCluster, Health, serverName } from "@/lib/cluster";
+import { HealthBanner } from "@/components/HealthBanner";
+import { ServerCard } from "@/components/ServerCard";
+import { Notebook } from "@/components/Notebook";
+import { ActivityFeed, EventKind, FeedEvent } from "@/components/ActivityFeed";
+import { Glossary, HowItWorks } from "@/components/Explainer";
 
 const POLL_MS = 1000;
+const nodes = getNodes();
+const ids = nodes.map((n) => n.id);
 
 export default function Dashboard() {
-  const nodes = useRef(getNodes()).current;
   const [statuses, setStatuses] = useState<Record<number, NodeStatus>>({});
-  const [key, setKey] = useState("");
-  const [value, setValue] = useState("");
-  const [op, setOp] = useState<"put" | "append">("put");
-  const [result, setResult] = useState<string>("");
-  const [busy, setBusy] = useState(false);
-  const [log, setLog] = useState<{ t: string; msg: string }[]>([]);
+  const [events, setEvents] = useState<FeedEvent[]>([]);
+  const [showTech, setShowTech] = useState(false);
+  const [powerBusy, setPowerBusy] = useState<number | null>(null);
+  const nextEventId = useRef(0);
+
+  const view = describeCluster(ids, statuses);
+
+  function addEvents(items: { kind: EventKind; msg: string }[]) {
+    if (items.length === 0) return;
+    const time = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" });
+    // Items arrive oldest-first; the feed is newest-first.
+    const stamped = items.map((e) => ({ ...e, time, id: nextEventId.current++ })).reverse();
+    setEvents((l) => [...stamped, ...l].slice(0, 50));
+  }
 
   useEffect(() => {
     let cancelled = false;
     const poll = async () => {
       const results = await Promise.all(nodes.map((n) => fetchStatus(n)));
       if (cancelled) return;
-      setStatuses((prev) => {
-        const next = { ...prev };
-        for (const r of results) next[r.id] = r;
-        return next;
-      });
+      setStatuses(Object.fromEntries(results.map((r) => [r.id, r])));
     };
     poll();
     const id = setInterval(poll, POLL_MS);
@@ -33,187 +44,153 @@ export default function Dashboard() {
       cancelled = true;
       clearInterval(id);
     };
-  }, [nodes]);
+  }, []);
 
-  // Track leader changes and node reachability flips for a lightweight
-  // event feed, so a leader failover is visible without staring at a table.
-  const prevStatuses = useRef<Record<number, NodeStatus>>({});
+  // Turn raw status flips into plain-English events, so a failover reads as a
+  // story ("Server 3 stopped responding… Server 2 is now in charge") rather
+  // than a table of numbers changing.
+  const prev = useRef<{ statuses: Record<number, NodeStatus>; leaderId: number | null; health: Health } | null>(null);
   useEffect(() => {
-    const prev = prevStatuses.current;
-    const events: string[] = [];
-    for (const s of Object.values(statuses)) {
-      const p = prev[s.id];
-      if (s.reachable && (!p || !p.reachable)) {
-        events.push(`node ${s.id} came online`);
+    if (view.health === "connecting") return;
+    const p = prev.current;
+    const out: { kind: EventKind; msg: string }[] = [];
+
+    if (!p) {
+      out.push({
+        kind: "info",
+        msg: `Connected. ${view.online} of ${view.total} servers are online${
+          view.leaderId !== null ? ` and ${serverName(view.leaderId)} is in charge` : ""
+        }.`,
+      });
+    } else {
+      for (const id of ids) {
+        const was = p.statuses[id];
+        const now = statuses[id];
+        if (was?.reachable && !now?.reachable) {
+          const what = now?.switchedOff ? "was switched off" : "stopped responding";
+          out.push(
+            p.leaderId === id
+              ? { kind: "bad", msg: `${serverName(id)}, the coordinator, ${what}. The others will vote for a new one.` }
+              : { kind: "warn", msg: `${serverName(id)} ${what}. The others keep working without it.` }
+          );
+        } else if (was && !was.reachable && now?.reachable) {
+          out.push({
+            kind: "good",
+            msg: `${serverName(id)} ${was.switchedOff ? "was switched back on" : "is back online"} and is catching up on anything it missed.`,
+          });
+        }
       }
-      if (!s.reachable && p?.reachable) {
-        events.push(`node ${s.id} went unreachable`);
+      if (view.leaderId !== null && view.leaderId !== p.leaderId) {
+        out.push({
+          kind: "good",
+          msg:
+            p.leaderId === null
+              ? `${serverName(view.leaderId)} won the vote and is now in charge.`
+              : `${serverName(view.leaderId)} is now in charge (taking over from ${serverName(p.leaderId)}).`,
+        });
       }
-      if (s.reachable && p?.reachable && s.leader && !p.leader) {
-        events.push(`node ${s.id} became leader (term ${s.term})`);
+      if (view.health === "stalled" && p.health !== "stalled") {
+        out.push({ kind: "bad", msg: `Too few servers are online, so changes are paused until at least ${view.needed} are back. Saved data is kept.` });
+      } else if (p.health === "stalled" && view.health !== "stalled") {
+        out.push({ kind: "good", msg: "Enough servers are back online — changes are allowed again." });
       }
     }
-    if (events.length > 0) {
-      setLog((l) =>
-        [...events.map((msg) => ({ t: new Date().toLocaleTimeString(), msg })), ...l].slice(0, 30)
-      );
-    }
-    prevStatuses.current = statuses;
+
+    addEvents(out);
+    prev.current = { statuses, leaderId: view.leaderId, health: view.health };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [statuses]);
 
-  const leader = Object.values(statuses).find((s) => s.reachable && s.leader);
-  const anyReachable = Object.values(statuses).find((s) => s.reachable);
-  const target = leader ?? anyReachable;
-
-  async function submit(kind: "get" | "write") {
-    if (!target || !target.reachable || !key) return;
-    const node = nodes.find((n) => n.id === target.id)!;
-    setBusy(true);
-    setResult("");
+  async function power(id: number, on: boolean) {
+    setPowerBusy(id);
     try {
-      if (kind === "get") {
-        const r = await kvGet(node, key);
-        setResult(r.found ? r.value : "(no such key)");
-      } else {
-        await kvWrite(node, key, value, op);
-        setResult("ok");
-      }
+      await setPower(nodes.find((n) => n.id === id)!, on);
     } catch (e) {
-      setResult(`error: ${e instanceof Error ? e.message : String(e)}`);
+      addEvents([{ kind: "bad", msg: `Couldn’t switch ${serverName(id)} ${on ? "on" : "off"} (${e instanceof Error ? e.message : String(e)}).` }]);
     } finally {
-      setBusy(false);
+      // Hold the button until the next poll reflects the change.
+      setTimeout(() => setPowerBusy(null), POLL_MS);
     }
   }
 
+  const demoControls = Object.values(statuses).some((s) => s.demoControls);
+  const leaderNode = nodes.find((n) => n.id === view.leaderId) ?? null;
+  const anyOnline = nodes.find((n) => statuses[n.id]?.reachable) ?? null;
+
   return (
-    <div className="min-h-screen bg-neutral-950 text-neutral-100 font-mono">
-      <div className="max-w-4xl mx-auto px-6 py-10 space-y-10">
-        <header>
-          <h1 className="text-xl font-semibold tracking-tight">raft-kv-store</h1>
-          <p className="text-neutral-500 text-sm mt-1">
-            live cluster dashboard — polling {nodes.length} node
-            {nodes.length === 1 ? "" : "s"} every {POLL_MS}ms
-          </p>
+    <div className="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
+      <div className="mx-auto max-w-5xl space-y-12 px-4 py-10 sm:px-6">
+        <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h1 className="text-3xl font-bold tracking-tight">Shared Notebook</h1>
+            <p className="mt-2 max-w-2xl leading-relaxed text-slate-600 dark:text-slate-400">
+              Your notes are stored on {view.total} separate servers at once. They work as a team and keep identical copies,
+              so if one of them breaks, nothing is lost and the notebook keeps working. This page shows what they are doing, live.
+            </p>
+          </div>
+          <label className="flex shrink-0 cursor-pointer items-center gap-2 text-sm text-slate-600 select-none dark:text-slate-400">
+            <input type="checkbox" checked={showTech} onChange={(e) => setShowTech(e.target.checked)} className="h-4 w-4 accent-indigo-600" />
+            Show technical details
+          </label>
         </header>
 
-        <section>
-          <h2 className="text-sm uppercase tracking-wider text-neutral-500 mb-3">Cluster</h2>
-          <div className="border border-neutral-800 rounded-lg overflow-hidden">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-neutral-900 text-neutral-400 text-left">
-                  <th className="px-4 py-2 font-medium">Node</th>
-                  <th className="px-4 py-2 font-medium">Status</th>
-                  <th className="px-4 py-2 font-medium">Term</th>
-                  <th className="px-4 py-2 font-medium">Role</th>
-                </tr>
-              </thead>
-              <tbody>
-                {nodes.map((n) => {
-                  const s = statuses[n.id];
-                  const reachable = s?.reachable;
-                  return (
-                    <tr key={n.id} className="border-t border-neutral-800">
-                      <td className="px-4 py-2">
-                        node {n.id}
-                        <span className="text-neutral-600 ml-2 text-xs">{n.httpAddr}</span>
-                      </td>
-                      <td className="px-4 py-2">
-                        <span
-                          className={`inline-flex items-center gap-1.5 ${
-                            reachable ? "text-emerald-400" : "text-red-500"
-                          }`}
-                        >
-                          <span
-                            className={`h-1.5 w-1.5 rounded-full ${
-                              reachable ? "bg-emerald-400" : "bg-red-500"
-                            }`}
-                          />
-                          {reachable ? "up" : "unreachable"}
-                        </span>
-                      </td>
-                      <td className="px-4 py-2 text-neutral-300">
-                        {reachable ? (s as { term: number }).term : "—"}
-                      </td>
-                      <td className="px-4 py-2">
-                        {reachable && (s as { leader: boolean }).leader ? (
-                          <span className="text-amber-400 font-semibold">leader</span>
-                        ) : reachable ? (
-                          <span className="text-neutral-500">follower</span>
-                        ) : (
-                          <span className="text-neutral-700">—</span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </section>
+        <HealthBanner view={view} />
 
-        <section>
-          <h2 className="text-sm uppercase tracking-wider text-neutral-500 mb-3">Get / Put / Append</h2>
-          <div className="border border-neutral-800 rounded-lg p-4 space-y-3">
-            <div className="flex gap-2">
-              <input
-                className="flex-1 bg-neutral-900 border border-neutral-800 rounded px-3 py-2 text-sm outline-none focus:border-neutral-600"
-                placeholder="key"
-                value={key}
-                onChange={(e) => setKey(e.target.value)}
+        <Section
+          title="The servers"
+          subtitle={
+            demoControls
+              ? "Each box is one computer holding a full copy of the notebook. Try switching off the one in charge and watch what happens."
+              : "Each box is one computer holding a full copy of the notebook."
+          }
+        >
+          <div className="grid gap-5 pt-3 sm:grid-cols-3">
+            {nodes.map((n) => (
+              <ServerCard
+                key={n.id}
+                node={n}
+                status={statuses[n.id]}
+                showTech={showTech}
+                hasMajority={view.online >= view.needed}
+                powerBusy={powerBusy === n.id}
+                onPower={(on) => power(n.id, on)}
               />
-              <input
-                className="flex-1 bg-neutral-900 border border-neutral-800 rounded px-3 py-2 text-sm outline-none focus:border-neutral-600"
-                placeholder="value"
-                value={value}
-                onChange={(e) => setValue(e.target.value)}
-              />
-              <select
-                className="bg-neutral-900 border border-neutral-800 rounded px-2 py-2 text-sm outline-none"
-                value={op}
-                onChange={(e) => setOp(e.target.value as "put" | "append")}
-              >
-                <option value="put">put</option>
-                <option value="append">append</option>
-              </select>
-            </div>
-            <div className="flex gap-2">
-              <button
-                disabled={busy || !target || !key}
-                onClick={() => submit("get")}
-                className="px-3 py-1.5 text-sm rounded bg-neutral-800 hover:bg-neutral-700 disabled:opacity-40 disabled:cursor-not-allowed transition"
-              >
-                Get
-              </button>
-              <button
-                disabled={busy || !target || !key}
-                onClick={() => submit("write")}
-                className="px-3 py-1.5 text-sm rounded bg-emerald-700 hover:bg-emerald-600 disabled:opacity-40 disabled:cursor-not-allowed transition"
-              >
-                {op === "put" ? "Put" : "Append"}
-              </button>
-              {!target && <span className="text-red-500 text-sm self-center">no reachable node</span>}
-            </div>
-            {result && (
-              <div className="text-sm bg-neutral-900 border border-neutral-800 rounded px-3 py-2 text-neutral-300">
-                {result}
-              </div>
-            )}
-          </div>
-        </section>
-
-        <section>
-          <h2 className="text-sm uppercase tracking-wider text-neutral-500 mb-3">Events</h2>
-          <div className="border border-neutral-800 rounded-lg p-4 h-48 overflow-y-auto text-sm space-y-1">
-            {log.length === 0 && <div className="text-neutral-600">watching for leader changes…</div>}
-            {log.map((e, i) => (
-              <div key={i} className="text-neutral-400">
-                <span className="text-neutral-600">{e.t}</span> — {e.msg}
-              </div>
             ))}
           </div>
-        </section>
+        </Section>
+
+        <Section title="Try it: write in the notebook" subtitle="Give your note a label, then save it. You can look it up again any time — even after a server fails.">
+          <Notebook target={leaderNode ?? anyOnline} view={view} onEvent={(kind, msg) => addEvents([{ kind, msg }])} />
+        </Section>
+
+        <Section title="What’s happening" subtitle="A plain-English log of everything the servers do, newest first.">
+          <ActivityFeed events={events} />
+        </Section>
+
+        <Section title="How it works" subtitle="Three simple rules keep every copy identical.">
+          <HowItWorks needed={view.needed} total={view.total} />
+        </Section>
+
+        {showTech && (
+          <Section title="Technical glossary" subtitle="How the words on this page map to the Raft consensus algorithm underneath.">
+            <Glossary />
+          </Section>
+        )}
+
+        <footer className="pb-4 text-center text-xs text-slate-400">
+          Updates every {POLL_MS / 1000} second{POLL_MS === 1000 ? "" : "s"} · built on the Raft consensus algorithm
+        </footer>
       </div>
     </div>
+  );
+}
+
+function Section({ title, subtitle, children }: { title: string; subtitle: string; children: React.ReactNode }) {
+  return (
+    <section>
+      <h2 className="text-xl font-semibold">{title}</h2>
+      <p className="mt-1 mb-4 text-sm text-slate-600 dark:text-slate-400">{subtitle}</p>
+      {children}
+    </section>
   );
 }

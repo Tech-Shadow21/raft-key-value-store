@@ -24,6 +24,7 @@ func main() {
 	maxRaftState := flag.Int("max-raft-state", -1, "snapshot once persisted Raft state exceeds this many bytes (-1 disables)")
 	verbose := flag.Bool("verbose", true, "log leader/term changes and commit latency")
 	httpAddr := flag.String("http", "", "address for the dashboard JSON API, e.g. localhost:8001 (empty disables it)")
+	demoControls := flag.Bool("demo-controls", false, "let the dashboard power this node off/on via POST /api/power (demos only: unauthenticated)")
 	flag.Parse()
 
 	if *id < 0 || *peersFlag == "" || *dataDir == "" {
@@ -68,12 +69,11 @@ func main() {
 	}
 	log.Printf("kvserver id=%d listening on %s, peers=%v", *id, self, peers)
 
-	kv := kvstore.StartServer(ends, idIndex[*id], persister, *maxRaftState)
-	kv.Raft().Verbose = *verbose
-	tcpSrv.RegisterName("KVServer", kv)
-	tcpSrv.RegisterName("Raft", kv.Raft())
+	n := newNode(ends, idIndex[*id], persister, *maxRaftState, *verbose)
+	tcpSrv.RegisterName("KVServer", kvRPC{n})
+	tcpSrv.RegisterName("Raft", raftRPC{n})
 
-	go statusLoop(kv)
+	go statusLoop(n)
 
 	if *httpAddr != "" {
 		clerkEnds := make([]transport.ClientEnd, len(ids))
@@ -81,16 +81,21 @@ func main() {
 			clerkEnds[i] = transport.NewTCPEnd(peers[pid])
 		}
 		ck := kvstore.MakeClerk(clerkEnds)
-		startHTTPServer(*httpAddr, *id, peers, kv, ck)
-		log.Printf("dashboard API listening on %s", *httpAddr)
+		startHTTPServer(*httpAddr, *id, peers, n, ck, *demoControls)
+		log.Printf("dashboard API listening on %s (demo controls: %v)", *httpAddr, *demoControls)
 	}
 
 	select {}
 }
 
-func statusLoop(kv *kvstore.Server) {
+func statusLoop(n *node) {
 	for {
 		time.Sleep(5 * time.Second)
+		kv := n.current()
+		if kv == nil {
+			log.Printf("status: powered off")
+			continue
+		}
 		term, isLeader := kv.Raft().GetState()
 		log.Printf("status: term=%d leader=%v", term, isLeader)
 	}

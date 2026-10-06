@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "raft-kv-store dashboard",
-  description: "Live cluster dashboard for the raft-kv-store Raft/KV cluster",
+  title: "Shared Notebook — live replication demo",
+  description: "Plain-English live view of the raft-kv-store cluster: servers, who is in charge, and what happens when one fails",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

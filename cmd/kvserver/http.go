@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 
 	"raftkv/kvstore"
@@ -17,8 +18,9 @@ import (
 type httpAPI struct {
 	id    int
 	peers map[int]string
-	kv    *kvstore.Server
+	node  *node
 	ck    *kvstore.Clerk
+	demo  bool
 }
 
 type statusResponse struct {
@@ -26,6 +28,10 @@ type statusResponse struct {
 	Term   int            `json:"term"`
 	Leader bool           `json:"leader"`
 	Peers  map[int]string `json:"peers"`
+	// Powered is false while the node is switched off from the dashboard;
+	// DemoControls says whether the dashboard may switch it at all.
+	Powered      bool `json:"powered"`
+	DemoControls bool `json:"demoControls"`
 }
 
 type kvGetResponse struct {
@@ -54,13 +60,35 @@ func withCORS(h http.HandlerFunc) http.HandlerFunc {
 }
 
 func (a *httpAPI) handleStatus(w http.ResponseWriter, r *http.Request) {
-	term, isLeader := a.kv.Raft().GetState()
-	writeJSON(w, statusResponse{
-		Id:     a.id,
-		Term:   term,
-		Leader: isLeader,
-		Peers:  a.peers,
-	})
+	resp := statusResponse{Id: a.id, Peers: a.peers, DemoControls: a.demo}
+	if kv := a.node.current(); kv != nil {
+		resp.Term, resp.Leader = kv.Raft().GetState()
+		resp.Powered = true
+	}
+	writeJSON(w, resp)
+}
+
+type powerRequest struct {
+	On bool `json:"on"`
+}
+
+func (a *httpAPI) handlePower(w http.ResponseWriter, r *http.Request) {
+	if !a.demo {
+		http.Error(w, "demo controls disabled (start kvserver with -demo-controls)", http.StatusForbidden)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req powerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	a.node.setPower(req.On)
+	log.Printf("demo control: powered %s", map[bool]string{true: "on", false: "off"}[req.On])
+	writeJSON(w, map[string]bool{"powered": req.On})
 }
 
 func (a *httpAPI) handleGet(w http.ResponseWriter, r *http.Request) {
@@ -105,11 +133,18 @@ func writeJSON(w http.ResponseWriter, v interface{}) {
 // background. peerAddrs is id->addr for every node (including this one),
 // used both to report in /api/status and to build the Clerk that fans
 // writes/reads out across the whole cluster.
-func startHTTPServer(addr string, id int, peerAddrs map[int]string, kv *kvstore.Server, ck *kvstore.Clerk) {
-	a := &httpAPI{id: id, peers: peerAddrs, kv: kv, ck: ck}
+func startHTTPServer(addr string, id int, peerAddrs map[int]string, n *node, ck *kvstore.Clerk, demo bool) {
+	a := &httpAPI{id: id, peers: peerAddrs, node: n, ck: ck, demo: demo}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/status", withCORS(a.handleStatus))
+	mux.HandleFunc("/api/power", withCORS(a.handlePower))
 	mux.HandleFunc("/api/kv", withCORS(func(w http.ResponseWriter, r *http.Request) {
+		// A switched-off node shouldn't serve anything, even though its
+		// Clerk could still reach the rest of the cluster.
+		if a.node.current() == nil {
+			http.Error(w, errPoweredOff.Error(), http.StatusServiceUnavailable)
+			return
+		}
 		if r.Method == http.MethodGet {
 			a.handleGet(w, r)
 			return
